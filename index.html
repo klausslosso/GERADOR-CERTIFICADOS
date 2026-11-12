@@ -377,6 +377,10 @@
               <span class="text-sm">📚</span>
               <span>Cursos e Turmas</span>
             </a>
+            <a href="https://centrodecapacitacaoiguabagrande.github.io/verifica-odecertificados/" target="_self" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-emerald-100 hover:text-white bg-emerald-900/60 hover:bg-emerald-800 border border-emerald-800/80 hover:border-emerald-500/70 transition-all shadow-sm whitespace-nowrap flex-shrink-0" title="Verificação de Autenticidade">
+              <span class="text-sm">🔍</span>
+              <span>Verificação de Certificados</span>
+            </a>
             <a href="https://klausslosso.github.io/INSTRUTOR/" target="_self" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-emerald-100 hover:text-white bg-emerald-900/60 hover:bg-emerald-800 border border-emerald-800/80 hover:border-emerald-500/70 transition-all shadow-sm whitespace-nowrap flex-shrink-0" title="Área do Instrutor">
               <span class="text-sm">👔</span>
               <span>Área do Instrutor</span>
@@ -729,7 +733,7 @@
             <!-- QR Code de Validação no Canto Inferior Direito -->
             <div id="certQrCodeBox" style="position: absolute; bottom: 15mm; right: 15mm; width: 28mm; text-align: center;">
               <div id="qrCodeWrapper" style="width: 24mm; height: 24mm; margin: 0 auto; background: white; padding: 2px; border-radius: 2px; display: flex; align-items: center; justify-content: center;">
-                <img id="qrCodeImg" src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https%3A%2F%2Fklausslosso.github.io%2FVERIFICA-O-CERTIFICADOS-CCP-IGUABA-GRANDE-RJ%2F%3Fcodigo%3DCCP-2026-0001" alt="QR Code" style="width: 24mm; height: 24mm; display: block; margin: 0 auto;">
+                <img id="qrCodeImg" src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https%3A%2F%2Fcentrodecapacitacaoiguabagrande.github.io%2Fverifica-odecertificados%2F%3Fcodigo%3DCCP-2026-0001" alt="QR Code" style="width: 24mm; height: 24mm; display: block; margin: 0 auto;">
               </div>
               <div style="font-size: 6.5pt; font-weight: bold; color: #333333; margin-top: 3px; text-transform: uppercase;">Validação Online</div>
               <div id="certCodeDisplay" style="font-size: 7pt; color: #205c40; font-weight: bold; font-family: monospace;">CCP-2026-0001</div>
@@ -802,7 +806,7 @@
     const supa = window.supabase.createClient(supabaseUrl, supabaseKey);
 
     // URL oficial de validação no GitHub Pages
-    const URL_VALIDACAO_BASE = 'https://klausslosso.github.io/VERIFICA-O-CERTIFICADOS-CCP-IGUABA-GRANDE-RJ/';
+    const URL_VALIDACAO_BASE = 'https://centrodecapacitacaoiguabagrande.github.io/verifica-odecertificados/';
 
     // Modelos de imagens de verso disponíveis fisicamente no diretório
     const MODELOS_VERSO_DISPONIVEIS = [
