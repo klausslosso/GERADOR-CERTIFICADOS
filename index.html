@@ -21,6 +21,9 @@
   <!-- Supabase JS Client v2 -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
+  <!-- QRCode.js Library (Geração local instantânea e offline de QR Code) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
   <!-- Lucide Icons -->
   <script src="https://unpkg.com/lucide@latest"></script>
 
@@ -643,7 +646,7 @@
           <div id="certificateFront" class="a4-landscape bg-cert-front print-page-break shadow-2xl relative select-none">
             
             <!-- Nome do Aluno (Centralizado sobre a linha verde da imagem) -->
-            <div id="certStudentName" style="position: absolute; top: 92mm; left: 102mm; width: 172mm; text-align: center; font-size: 20pt; font-weight: bold; color: #1a1a1a; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: 'Montserrat', Arial, sans-serif;">
+            <div id="certStudentName" style="position: absolute; top: 92mm; left: 102mm; width: 172mm; text-align: center; font-size: 20pt; font-weight: bold; color: #1a1a1a; text-transform: uppercase; white-space: normal; word-break: normal; overflow-wrap: break-word; font-family: 'Montserrat', Arial, sans-serif;">
               NOME DO ALUNO
             </div>
 
@@ -670,8 +673,10 @@
             </div>
 
             <!-- QR Code de Validação no Canto Inferior Direito -->
-            <div style="position: absolute; bottom: 15mm; right: 15mm; width: 28mm; text-align: center;">
-              <img id="qrCodeImg" src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https%3A%2F%2Fklausslosso.github.io%2FVERIFICA-O-CERTIFICADOS-CCP-IGUABA-GRANDE-RJ%2F%3Fcodigo%3DCCP-2026-0001" alt="QR Code" style="width: 24mm; height: 24mm; display: block; margin: 0 auto; background: white; padding: 2px; border-radius: 2px;">
+            <div id="certQrCodeBox" style="position: absolute; bottom: 15mm; right: 15mm; width: 28mm; text-align: center;">
+              <div id="qrCodeWrapper" style="width: 24mm; height: 24mm; margin: 0 auto; background: white; padding: 2px; border-radius: 2px; display: flex; align-items: center; justify-content: center;">
+                <img id="qrCodeImg" src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https%3A%2F%2Fklausslosso.github.io%2FVERIFICA-O-CERTIFICADOS-CCP-IGUABA-GRANDE-RJ%2F%3Fcodigo%3DCCP-2026-0001" alt="QR Code" style="width: 24mm; height: 24mm; display: block; margin: 0 auto;">
+              </div>
               <div style="font-size: 6.5pt; font-weight: bold; color: #333333; margin-top: 3px; text-transform: uppercase;">Validação Online</div>
               <div id="certCodeDisplay" style="font-size: 7pt; color: #205c40; font-weight: bold; font-family: monospace;">CCP-2026-0001</div>
             </div>
@@ -1614,10 +1619,93 @@
       }
     }
 
+    // --- FORMATAÇÃO DE NOMES E QR CODES ---
+    function aplicarNomeNoCertificado(elemento, nome) {
+      if (!elemento) return;
+      const textoLimpo = (nome || "NOME DO ALUNO").trim();
+      elemento.textContent = textoLimpo;
+      elemento.style.whiteSpace = 'normal';
+      elemento.style.wordBreak = 'normal';
+      elemento.style.overflowWrap = 'break-word';
+      elemento.style.textAlign = 'center';
+      elemento.style.textTransform = 'uppercase';
+
+      const len = textoLimpo.length;
+      if (len > 34) {
+        elemento.style.top = '88mm';
+        elemento.style.fontSize = '14pt';
+        elemento.style.lineHeight = '1.15';
+      } else if (len > 22) {
+        elemento.style.top = '90mm';
+        elemento.style.fontSize = '16.5pt';
+        elemento.style.lineHeight = '1.15';
+      } else {
+        elemento.style.top = '92mm';
+        elemento.style.fontSize = '20pt';
+        elemento.style.lineHeight = '1.2';
+      }
+    }
+
+    function atualizarQrCodePreview(certCode) {
+      const urlValidar = `${URL_VALIDACAO_BASE}?codigo=${encodeURIComponent(certCode)}`;
+      const qrWrapper = document.getElementById('qrCodeWrapper');
+      const certDisplay = document.getElementById('certCodeDisplay');
+      if (certDisplay) certDisplay.textContent = certCode;
+
+      const btnTestar = document.getElementById('btnTestarValidacao');
+      if (btnTestar) btnTestar.href = urlValidar;
+
+      if (!qrWrapper) return;
+      qrWrapper.innerHTML = '';
+
+      if (typeof QRCode !== 'undefined') {
+        try {
+          new QRCode(qrWrapper, {
+            text: urlValidar,
+            width: 130,
+            height: 130,
+            colorDark: "#000000",
+            colorLight: "#ffffff",
+            correctLevel: QRCode.CorrectLevel.M
+          });
+          const imgOuCanvas = qrWrapper.querySelector('img, canvas');
+          if (imgOuCanvas) {
+            imgOuCanvas.style.width = '24mm';
+            imgOuCanvas.style.height = '24mm';
+            imgOuCanvas.style.display = 'block';
+          }
+          return;
+        } catch (e) {
+          console.warn("Erro ao gerar QRCode local:", e);
+        }
+      }
+
+      // Fallback para api remota caso lib offline
+      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(urlValidar)}`;
+      qrWrapper.innerHTML = `<img id="qrCodeImg" src="${qrUrl}" alt="QR Code" style="width: 24mm; height: 24mm; display: block; margin: 0 auto; background: white; padding: 2px; border-radius: 2px;">`;
+    }
+
+    async function aguardarImagensCarregadas(container) {
+      if (!container) return;
+      const imagens = Array.from(container.querySelectorAll('img'));
+      if (imagens.length === 0) return;
+      
+      const promessas = imagens.map(img => {
+        if (img.complete && img.naturalHeight !== 0) return Promise.resolve();
+        return new Promise(resolve => {
+          img.onload = resolve;
+          img.onerror = resolve;
+          setTimeout(resolve, 3500);
+        });
+      });
+      
+      await Promise.all(promessas);
+    }
+
     // --- FUNÇÕES DE DIGITAÇÃO E EDIÇÃO LIVRE (ADMIN) ---
     function onStudentNameDirectInput() {
       const name = document.getElementById('studentNameInput').value || "NOME DO ALUNO";
-      document.getElementById('certStudentName').textContent = name;
+      aplicarNomeNoCertificado(document.getElementById('certStudentName'), name);
     }
 
     function onCourseCustomInput() {
@@ -1659,13 +1747,8 @@
     }
 
     function onCertCodeDirectInput() {
-      const certCode = document.getElementById('certCodeInput').value;
-      document.getElementById('certCodeDisplay').textContent = certCode;
-      const urlValidar = `${URL_VALIDACAO_BASE}?codigo=${encodeURIComponent(certCode)}`;
-      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(urlValidar)}`;
-      document.getElementById('qrCodeImg').src = qrUrl;
-      const btnTestar = document.getElementById('btnTestarValidacao');
-      if (btnTestar) btnTestar.href = urlValidar;
+      const certCode = document.getElementById('certCodeInput').value || "CCP-2026-0001";
+      atualizarQrCodePreview(certCode);
     }
 
     // --- EDIÇÃO DA GRADE CURRICULAR (ADMIN) ---
@@ -1790,7 +1873,7 @@
       const certCode = document.getElementById('certCodeInput').value || "CCP-2026-0001";
 
       // Frente
-      document.getElementById('certStudentName').textContent = studentName;
+      aplicarNomeNoCertificado(document.getElementById('certStudentName'), studentName);
       document.getElementById('certCourseTitle').textContent = courseName.toUpperCase();
       document.getElementById('certInstructorFront').textContent = instructor;
       document.getElementById('certHours').textContent = hours;
@@ -1805,15 +1888,7 @@
       }
       const backCourseLegal = document.getElementById('backCourseLegalName');
       if (backCourseLegal) backCourseLegal.textContent = courseName;
-      document.getElementById('certCodeDisplay').textContent = certCode;
-      const urlValidar = `${URL_VALIDACAO_BASE}?codigo=${encodeURIComponent(certCode)}`;
-      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(urlValidar)}`;
-      document.getElementById('qrCodeImg').src = qrUrl;
-
-      const btnTestar = document.getElementById('btnTestarValidacao');
-      if (btnTestar) {
-        btnTestar.href = urlValidar;
-      }
+      atualizarQrCodePreview(certCode);
     }
 
     // --- CONTROLE DE MODO DE VISUALIZAÇÃO ---
@@ -1921,17 +1996,22 @@
           const frontDiv = document.createElement('div');
           const quebraFront = (mode === 'both' || !isUltimoAluno) ? 'print-page-break' : '';
           frontDiv.className = `a4-landscape bg-cert-front ${quebraFront} shadow-2xl relative select-none`;
-          frontDiv.innerHTML = `
-            <div style="position: absolute; top: 92mm; left: 102mm; width: 172mm; text-align: center; font-size: 20pt; font-weight: bold; color: #1a1a1a; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: 'Montserrat', Arial, sans-serif;">
-              ${studentName}
-            </div>
-            <div style="position: absolute; top: 108mm; left: 102mm; width: 172mm; font-size: 10.5pt; line-height: 1.55; text-align: justify; text-align-last: center; color: #222222; font-family: Arial, sans-serif;">
-              concluiu com êxito o curso de qualificação profissional em <b>${courseName.toUpperCase()}</b>, ministrado pela instrutora <b>${instructor}</b>, promovido pelo Centro de Capacitação Profissional (CCP) através da Secretaria Municipal de Desenvolvimento Econômico, Trabalho e Renda, com carga horária total de <b>${hours}</b> horas (${hoursExt}), no período de ${period}.
-            </div>
-            <div style="position: absolute; top: 136mm; left: 102mm; width: 172mm; text-align: center; font-size: 10.5pt; color: #222222; font-family: Arial, sans-serif;">
-              Iguaba Grande - RJ, ${formatarDataPorExtensoBR(issueDate)}.
-            </div>
-          `;
+
+          const nomeDiv = document.createElement('div');
+          nomeDiv.style.cssText = "position: absolute; left: 102mm; width: 172mm; font-weight: bold; color: #1a1a1a; font-family: 'Montserrat', Arial, sans-serif;";
+          aplicarNomeNoCertificado(nomeDiv, studentName);
+          frontDiv.appendChild(nomeDiv);
+
+          const textoDiv = document.createElement('div');
+          textoDiv.style.cssText = "position: absolute; top: 108mm; left: 102mm; width: 172mm; font-size: 10.5pt; line-height: 1.55; text-align: justify; text-align-last: center; color: #222222; font-family: Arial, sans-serif;";
+          textoDiv.innerHTML = `concluiu com êxito o curso de qualificação profissional em <b>${courseName.toUpperCase()}</b>, ministrado pela instrutora <b>${instructor}</b>, promovido pelo Centro de Capacitação Profissional (CCP) através da Secretaria Municipal de Desenvolvimento Econômico, Trabalho e Renda, com carga horária total de <b>${hours}</b> horas (${hoursExt}), no período de ${period}.`;
+          frontDiv.appendChild(textoDiv);
+
+          const dataDiv = document.createElement('div');
+          dataDiv.style.cssText = "position: absolute; top: 136mm; left: 102mm; width: 172mm; text-align: center; font-size: 10.5pt; color: #222222; font-family: Arial, sans-serif;";
+          dataDiv.textContent = `Iguaba Grande - RJ, ${formatarDataPorExtensoBR(issueDate)}.`;
+          frontDiv.appendChild(dataDiv);
+
           if (batchPrintContainer) batchPrintContainer.appendChild(frontDiv);
         }
 
@@ -1941,18 +2021,57 @@
           backDiv.className = `a4-landscape bg-cert-back ${quebraBack} shadow-2xl relative select-none`;
           aplicarFundoVerso(backDiv, courseName);
           const urlValidar = `${URL_VALIDACAO_BASE}?codigo=${encodeURIComponent(certCode)}`;
-          const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(urlValidar)}`;
 
-          backDiv.innerHTML = `
-            <div style="position: absolute; top: 30mm; left: 60mm; width: 177mm; height: 85mm; padding: 6mm; overflow: hidden; box-sizing: border-box;">
-              ${curriculumHtml}
-            </div>
-            <div style="position: absolute; bottom: 15mm; right: 15mm; width: 28mm; text-align: center;">
-              <img src="${qrUrl}" alt="QR Code" style="width: 24mm; height: 24mm; display: block; margin: 0 auto; background: white; padding: 2px; border-radius: 2px;">
-              <div style="font-size: 6.5pt; font-weight: bold; color: #333333; margin-top: 3px; text-transform: uppercase;">Validação Online</div>
-              <div style="font-size: 7pt; color: #205c40; font-weight: bold; font-family: monospace;">${certCode}</div>
-            </div>
-          `;
+          const curriculoWrapper = document.createElement('div');
+          curriculoWrapper.style.cssText = "position: absolute; top: 30mm; left: 60mm; width: 177mm; height: 85mm; padding: 6mm; overflow: hidden; box-sizing: border-box;";
+          curriculoWrapper.innerHTML = curriculumHtml;
+          backDiv.appendChild(curriculoWrapper);
+
+          const qrBox = document.createElement('div');
+          qrBox.style.cssText = "position: absolute; bottom: 15mm; right: 15mm; width: 28mm; text-align: center;";
+
+          const qrInner = document.createElement('div');
+          qrInner.style.cssText = "width: 24mm; height: 24mm; margin: 0 auto; background: white; padding: 2px; border-radius: 2px; display: flex; align-items: center; justify-content: center;";
+
+          if (typeof QRCode !== 'undefined') {
+            try {
+              new QRCode(qrInner, {
+                text: urlValidar,
+                width: 130,
+                height: 130,
+                colorDark: "#000000",
+                colorLight: "#ffffff",
+                correctLevel: QRCode.CorrectLevel.M
+              });
+              const item = qrInner.querySelector('img, canvas');
+              if (item) {
+                item.style.width = '24mm';
+                item.style.height = '24mm';
+                item.style.display = 'block';
+              }
+            } catch (e) {
+              const fallbackUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(urlValidar)}`;
+              qrInner.innerHTML = `<img src="${fallbackUrl}" alt="QR Code" style="width: 24mm; height: 24mm; display: block; margin: 0 auto;">`;
+            }
+          } else {
+            const fallbackUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(urlValidar)}`;
+            qrInner.innerHTML = `<img src="${fallbackUrl}" alt="QR Code" style="width: 24mm; height: 24mm; display: block; margin: 0 auto;">`;
+          }
+
+          qrBox.appendChild(qrInner);
+
+          const leg1 = document.createElement('div');
+          leg1.style.cssText = "font-size: 6.5pt; font-weight: bold; color: #333333; margin-top: 3px; text-transform: uppercase;";
+          leg1.textContent = "Validação Online";
+          qrBox.appendChild(leg1);
+
+          const leg2 = document.createElement('div');
+          leg2.style.cssText = "font-size: 7pt; color: #205c40; font-weight: bold; font-family: monospace;";
+          leg2.textContent = certCode;
+          qrBox.appendChild(leg2);
+
+          backDiv.appendChild(qrBox);
+
           if (batchPrintContainer) batchPrintContainer.appendChild(backDiv);
         }
       });
@@ -1992,10 +2111,14 @@
 
       window.addEventListener('afterprint', limparModoLote);
 
+      // Aguarda garantia de que todas as imagens (versos, QRCodes) estejam totalmente carregadas
+      await aguardarImagensCarregadas(batchPrintContainer);
+      await new Promise(r => setTimeout(r, 400));
+
       setTimeout(() => {
         window.print();
         setTimeout(limparModoLote, 1500);
-      }, 500);
+      }, 300);
     }
   </script>
 </body>
