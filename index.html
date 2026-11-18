@@ -377,7 +377,7 @@
               <span class="text-sm">📚</span>
               <span>Cursos e Turmas</span>
             </a>
-            <a href="https://centrodecapacitacaoiguabagrande.github.io/verifica-odecertificados/" target="_self" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-emerald-100 hover:text-white bg-emerald-900/60 hover:bg-emerald-800 border border-emerald-800/80 hover:border-emerald-500/70 transition-all shadow-sm whitespace-nowrap flex-shrink-0" title="Verificação de Autenticidade">
+            <a href="https://klausslosso.github.io/VERIFICA-O-CERTIFICADOS-CCP-IGUABA-GRANDE-RJ/" target="_self" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-emerald-100 hover:text-white bg-emerald-900/60 hover:bg-emerald-800 border border-emerald-800/80 hover:border-emerald-500/70 transition-all shadow-sm whitespace-nowrap flex-shrink-0" title="Verificação de Autenticidade">
               <span class="text-sm">🔍</span>
               <span>Verificação de Certificados</span>
             </a>
@@ -650,7 +650,7 @@
             <div>
               <div class="flex items-center justify-between mb-1">
                 <label class="text-[11px] font-semibold text-slate-500 uppercase">Código de Registro / Validação</label>
-                <a id="btnTestarValidacao" href="#" target="_blank" class="text-[11px] text-emerald-700 hover:text-emerald-900 font-medium underline flex items-center gap-1">
+                <a id="btnTestarValidacao" href="https://klausslosso.github.io/VERIFICA-O-CERTIFICADOS-CCP-IGUABA-GRANDE-RJ/" target="_blank" class="text-[11px] text-emerald-700 hover:text-emerald-900 font-medium underline flex items-center gap-1">
                   Testar Validação <i data-lucide="external-link" class="w-3 h-3"></i>
                 </a>
               </div>
@@ -732,9 +732,7 @@
 
             <!-- QR Code de Validação no Canto Inferior Direito -->
             <div id="certQrCodeBox" style="position: absolute; bottom: 15mm; right: 15mm; width: 28mm; text-align: center;">
-              <div id="qrCodeWrapper" style="width: 24mm; height: 24mm; margin: 0 auto; background: white; padding: 2px; border-radius: 2px; display: flex; align-items: center; justify-content: center;">
-                <img id="qrCodeImg" src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https%3A%2F%2Fcentrodecapacitacaoiguabagrande.github.io%2Fverifica-odecertificados%2F%3Fcodigo%3DCCP-2026-0001" alt="QR Code" style="width: 24mm; height: 24mm; display: block; margin: 0 auto;">
-              </div>
+              <div id="qrCodeWrapper" style="width: 24mm; height: 24mm; margin: 0 auto; background: white; padding: 2px; border-radius: 2px; display: flex; align-items: center; justify-content: center;"></div>
               <div style="font-size: 6.5pt; font-weight: bold; color: #333333; margin-top: 3px; text-transform: uppercase;">Validação Online</div>
               <div id="certCodeDisplay" style="font-size: 7pt; color: #205c40; font-weight: bold; font-family: monospace;">CCP-2026-0001</div>
             </div>
@@ -806,7 +804,7 @@
     const supa = window.supabase.createClient(supabaseUrl, supabaseKey);
 
     // URL oficial de validação no GitHub Pages
-    const URL_VALIDACAO_BASE = 'https://centrodecapacitacaoiguabagrande.github.io/verifica-odecertificados/';
+    const URL_VALIDACAO_BASE = 'https://klausslosso.github.io/VERIFICA-O-CERTIFICADOS-CCP-IGUABA-GRANDE-RJ/';
 
     // Modelos de imagens de verso disponíveis fisicamente no diretório
     const MODELOS_VERSO_DISPONIVEIS = [
@@ -897,6 +895,8 @@
       popularSelectModelosVerso();
       lucide.createIcons();
       setViewMode('both');
+      const btnTestarInit = document.getElementById('btnTestarValidacao');
+      if (btnTestarInit) btnTestarInit.href = URL_VALIDACAO_BASE;
       try {
         const { data: { session }, error } = await supa.auth.getSession();
         if (session && !error) {
@@ -980,7 +980,11 @@
         console.error("Erro ao carregar perfil:", perfilError);
         const detalhe = perfilError ? ` (${perfilError.message})` : "";
         alert("Perfil de acesso não configurado no SDETR." + detalhe);
-        await supa.auth.signOut();
+        try {
+          await supa.auth.signOut();
+        } catch (e) {}
+        localStorage.clear();
+        sessionStorage.clear();
         document.getElementById('login-screen').style.display = 'flex';
         document.getElementById('appContainer').style.display = 'none';
         return;
@@ -991,7 +995,11 @@
       // Bloqueio rigoroso: Perfis de Alunos e Instrutor não têm acesso a esta página
       if (nivelNorm === 'alunos' || nivelNorm === 'aluno' || nivelNorm === 'instrutor' || nivelNorm === 'instrutores') {
         alert("Acesso negado: O seu perfil (" + nivelAcessoUsuario + ") não possui autorização para acessar o Emissor de Certificados.");
-        await supa.auth.signOut();
+        try {
+          await supa.auth.signOut();
+        } catch (e) {}
+        localStorage.clear();
+        sessionStorage.clear();
         window.location.reload();
         return;
       }
@@ -1018,8 +1026,11 @@
       try {
         await supa.auth.signOut();
       } catch (e) {}
+      localStorage.clear();
+      sessionStorage.clear();
       window.location.reload();
     }
+    const realizarLogout = encerrarSessao;
 
     // --- APLICAÇÃO DE PERMISSÕES NA INTERFACE ---
     function aplicarPermissoesInterface(isAdminUser) {
@@ -1125,7 +1136,7 @@
           status: 'ativo'
         };
 
-        const { error } = await supa.from('certificados').upsert(payload, { onConflict: 'codigo' });
+        const { error } = await supa.from('certificados').insert(payload);
 
         if (error) {
           console.error('Erro ao registrar certificado no Supabase:', error);
@@ -1262,6 +1273,24 @@
     }
 
     // --- FORMATAÇÃO E UTILIDADES ---
+    function escapeHtml(str) {
+      if (str === null || str === undefined) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function gerarCodigoCertificadoUnico(ano) {
+      const anoFinal = ano || new Date().getFullYear();
+      const bytes = new Uint8Array(4);
+      window.crypto.getRandomValues(bytes);
+      const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+      return `CCP-${anoFinal}-${hex}`;
+    }
+
     function formatarDataBR(dataStr) {
       if (!dataStr) return '';
       dataStr = String(dataStr).trim();
@@ -1358,12 +1387,7 @@
 
         atualizarListasMemoriaPorPerfil();
 
-        localStorage.setItem('ccp_supabase_cache', JSON.stringify({
-          cursos: todosCursosBase,
-          turmas: todasTurmasBase,
-          alunos: todosAlunosBase,
-          instrutores: instrutoresMemoria
-        }));
+        localStorage.removeItem('ccp_supabase_cache');
 
         atualizarStatusBadge('success', `Conectado (${cursosMemoria.length} cursos, ${alunosMemoria.length} alunos)`);
         popularSelectCursos();
@@ -1373,20 +1397,7 @@
         }
       } catch (err) {
         console.error("Erro ao carregar dados do SDETR:", err);
-        const cache = localStorage.getItem('ccp_supabase_cache');
-        if (cache) {
-          try {
-            const parsed = JSON.parse(cache);
-            todosCursosBase = parsed.cursos || [];
-            todasTurmasBase = parsed.turmas || [];
-            todosAlunosBase = parsed.alunos || [];
-            instrutoresMemoria = parsed.instrutores || [];
-            atualizarListasMemoriaPorPerfil();
-            atualizarStatusBadge('warning', `Cache Local SDETR (${cursosMemoria.length} cursos)`);
-            popularSelectCursos();
-            return;
-          } catch (e) {}
-        }
+        localStorage.removeItem('ccp_supabase_cache');
         atualizarStatusBadge('error', 'Falha ao conectar no SDETR');
       }
     }
@@ -1648,7 +1659,7 @@
       document.getElementById('studentNameInput').value = listaVisivel[0].nome;
       
       const anoAtual = new Date().getFullYear();
-      document.getElementById('certCodeInput').value = `CCP-${anoAtual}-${String(1).padStart(4, '0')}`;
+      document.getElementById('certCodeInput').value = gerarCodigoCertificadoUnico(anoAtual);
 
       updateCurrentData();
     }
@@ -1674,7 +1685,7 @@
         selectedStudentIndex = idx;
         document.getElementById('studentNameInput').value = listaVisivel[idx].nome;
         const anoAtual = new Date().getFullYear();
-        document.getElementById('certCodeInput').value = `CCP-${anoAtual}-${String(idx + 1).padStart(4, '0')}`;
+        document.getElementById('certCodeInput').value = gerarCodigoCertificadoUnico(anoAtual);
         updateCurrentData();
       }
     }
@@ -1734,15 +1745,12 @@
             imgOuCanvas.style.height = '24mm';
             imgOuCanvas.style.display = 'block';
           }
-          return;
         } catch (e) {
-          console.warn("Erro ao gerar QRCode local:", e);
+          console.error("Erro ao gerar QRCode local:", e);
         }
+      } else {
+        console.error("Biblioteca QRCode.js local indisponível.");
       }
-
-      // Fallback para api remota caso lib offline
-      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(urlValidar)}`;
-      qrWrapper.innerHTML = `<img id="qrCodeImg" src="${qrUrl}" alt="QR Code" style="width: 24mm; height: 24mm; display: block; margin: 0 auto; background: white; padding: 2px; border-radius: 2px;">`;
     }
 
     async function aguardarImagensCarregadas(container) {
@@ -1903,7 +1911,7 @@
         if (textoLimpo) {
           itensHtml += `
             <div style="font-size: 8.5pt; color: #222222; text-align: center; line-height: 1.55; font-family: 'Montserrat', Arial, sans-serif; font-weight: 500; margin: 2px 0;">
-              ${textoLimpo}
+              ${escapeHtml(textoLimpo)}
             </div>
           `;
         }
@@ -2117,7 +2125,7 @@
 
       alunosFiltrados.forEach((aluno, index) => {
         const studentName = aluno.nome;
-        const certCode = `CCP-${anoAtual}-${String(index + 1).padStart(4, '0')}`;
+        const certCode = gerarCodigoCertificadoUnico(anoAtual);
         const isUltimoAluno = index === alunosFiltrados.length - 1;
 
         loteCertificados.push({
@@ -2144,7 +2152,7 @@
 
           const textoDiv = document.createElement('div');
           textoDiv.style.cssText = "position: absolute; top: 108mm; left: 102mm; width: 172mm; font-size: 10.5pt; line-height: 1.55; text-align: justify; text-align-last: center; color: #222222; font-family: Arial, sans-serif;";
-          textoDiv.innerHTML = `concluiu com êxito o curso de qualificação profissional em <b>${courseName.toUpperCase()}</b>, ${prefixoInstrutor} <b>${instructor}</b>, promovido pelo Centro de Capacitação Profissionalizante Lahylton Cézar Santana Neves (CCP) através da Secretaria Municipal de Desenvolvimento Econômico, Trabalho e Renda, com carga horária total de <b>${hours}</b> horas (${hoursExt}), no período de ${period}.`;
+          textoDiv.innerHTML = `concluiu com êxito o curso de qualificação profissional em <b>${escapeHtml(courseName.toUpperCase())}</b>, ${escapeHtml(prefixoInstrutor)} <b>${escapeHtml(instructor)}</b>, promovido pelo Centro de Capacitação Profissionalizante Lahylton Cézar Santana Neves (CCP) através da Secretaria Municipal de Desenvolvimento Econômico, Trabalho e Renda, com carga horária total de <b>${escapeHtml(hours)}</b> horas (${escapeHtml(hoursExt)}), no período de ${escapeHtml(period)}.`;
           frontDiv.appendChild(textoDiv);
 
           const dataDiv = document.createElement('div');
@@ -2190,12 +2198,10 @@
                 item.style.display = 'block';
               }
             } catch (e) {
-              const fallbackUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(urlValidar)}`;
-              qrInner.innerHTML = `<img src="${fallbackUrl}" alt="QR Code" style="width: 24mm; height: 24mm; display: block; margin: 0 auto;">`;
+              console.error("Erro ao gerar QRCode local no lote:", e);
             }
           } else {
-            const fallbackUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(urlValidar)}`;
-            qrInner.innerHTML = `<img src="${fallbackUrl}" alt="QR Code" style="width: 24mm; height: 24mm; display: block; margin: 0 auto;">`;
+            console.error("Biblioteca QRCode.js local indisponível no lote.");
           }
 
           qrBox.appendChild(qrInner);
@@ -2229,7 +2235,7 @@
 
       // Salva todo o lote no Supabase
       try {
-        const { error } = await supa.from('certificados').upsert(loteCertificados, { onConflict: 'codigo' });
+        const { error } = await supa.from('certificados').insert(loteCertificados);
         if (error) {
           console.error("Erro ao registrar lote no Supabase:", error);
           alert(`Aviso: Ocorreu um erro ao salvar o lote no SDETR: ${error.message}\nA impressão continuará.`);
