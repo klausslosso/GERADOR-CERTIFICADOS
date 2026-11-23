@@ -635,7 +635,8 @@
             <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
               <div class="sm:col-span-2">
                 <label class="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Instrutor(a) Responsável</label>
-                <input type="text" id="instructorNameInput" oninput="onInstructorDirectInput()" readonly class="w-full bg-slate-100 border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-medium text-slate-700 cursor-not-allowed select-none focus:outline-none transition">
+                <input type="text" id="instructorNameInput" list="listaInstrutoresBase" oninput="onInstructorDirectInput()" readonly class="w-full bg-slate-100 border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-medium text-slate-700 cursor-not-allowed select-none focus:outline-none transition">
+                <datalist id="listaInstrutoresBase"></datalist>
               </div>
               <div>
                 <label class="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Tratamento</label>
@@ -842,7 +843,18 @@
     let selectedTurma = null;
     let alunosFiltrados = [];
     let selectedStudentIndex = 0;
+    let selectedStudentRef = null;
     let currentViewMode = 'front';
+
+    // Índices e estado para reconciliação de instrutores e sincronização contínua
+    let mapaInstrutoresPorId = new Map();
+    let mapaInstrutoresPorNomeNorm = new Map();
+    let mapaRenomeacaoInstrutor = new Map();
+    let ultimoInstrutorResolvidoFormulario = '';
+    let sincronizacaoEmAndamento = false;
+    let ultimaSincronizacaoMs = 0;
+    const edicaoManualAdminCampos = new Set();
+    let restaurandoEstadoSilencioso = false;
 
     // --- CONTROLE DE TEMA VISUAL (MODO ESCURO / CLARO) ---
     function aplicarTemaSalvo() {
@@ -911,6 +923,14 @@
         document.getElementById('login-screen').style.display = 'flex';
         document.getElementById('appContainer').style.display = 'none';
       }
+    });
+
+    window.addEventListener('focus', () => {
+      if (!utilizadorAtual) return;
+      const appContainer = document.getElementById('appContainer');
+      if (!appContainer || appContainer.style.display === 'none') return;
+      if (Date.now() - ultimaSincronizacaoMs < 15000) return;
+      carregarDadosSupabase(false);
     });
 
     async function realizarLogin() {
@@ -1136,7 +1156,31 @@
           status: 'ativo'
         };
 
-        const { error } = await supa.from('certificados').insert(payload);
+        let { error } = await supa
+          .from('certificados')
+          .upsert(payload, { onConflict: 'codigo' });
+
+        if (error) {
+          // Fallback caso a tabela não possua constraint UNIQUE para upsert ou falhe por conflito
+          const { data: existente } = await supa
+            .from('certificados')
+            .select('codigo')
+            .eq('codigo', dadosCert.codigo)
+            .maybeSingle();
+
+          if (existente) {
+            const resUpd = await supa
+              .from('certificados')
+              .update(payload)
+              .eq('codigo', dadosCert.codigo);
+            error = resUpd.error;
+          } else {
+            const resIns = await supa
+              .from('certificados')
+              .insert(payload);
+            error = resIns.error;
+          }
+        }
 
         if (error) {
           console.error('Erro ao registrar certificado no Supabase:', error);
@@ -1366,16 +1410,276 @@
         .filter(linha => linha.length > 0);
     }
 
+    // --- RECONCILIAÇÃO DE NOMES DE INSTRUTORES E NORMALIZAÇÃO ---
+    function normalizarTextoComparacao(str) {
+      if (!str) return '';
+      return String(str)
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toUpperCase();
+    }
+
+    function distanciaEdicao(a, b) {
+      const s1 = String(a || '');
+      const s2 = String(b || '');
+      const m = s1.length;
+      const n = s2.length;
+      if (m === 0) return n;
+      if (n === 0) return m;
+      const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+      for (let i = 0; i <= m; i++) dp[i][0] = i;
+      for (let j = 0; j <= n; j++) dp[0][j] = j;
+      for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+          const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
+          dp[i][j] = Math.min(
+            dp[i - 1][j] + 1,
+            dp[i][j - 1] + 1,
+            dp[i - 1][j - 1] + cost
+          );
+        }
+      }
+      return dp[m][n];
+    }
+
+    function extrairTokensSignificativos(str) {
+      const preposicoes = new Set(['DE', 'DA', 'DO', 'DAS', 'DOS', 'E']);
+      return normalizarTextoComparacao(str)
+        .split(' ')
+        .filter(t => t && !preposicoes.has(t));
+    }
+
+    function construirIndicesInstrutores(instrutores, logsInstrutores) {
+      mapaInstrutoresPorId = new Map();
+      mapaInstrutoresPorNomeNorm = new Map();
+      mapaRenomeacaoInstrutor = new Map();
+
+      (instrutores || []).forEach(inst => {
+        if (!inst || !inst.nome) return;
+        const nomeLimpo = String(inst.nome).trim();
+        if (!nomeLimpo) return;
+        if (inst.id !== undefined && inst.id !== null) {
+          mapaInstrutoresPorId.set(String(inst.id), nomeLimpo);
+        }
+        const norm = normalizarTextoComparacao(nomeLimpo);
+        if (norm) {
+          mapaInstrutoresPorNomeNorm.set(norm, nomeLimpo);
+        }
+      });
+
+      const cadeiaRenomeacao = new Map();
+      (logsInstrutores || []).forEach(log => {
+        if (!log) return;
+        const regId = log.registro_id !== undefined && log.registro_id !== null ? String(log.registro_id) : '';
+        const nomeAntigo = log.dados_antigos && log.dados_antigos.nome ? String(log.dados_antigos.nome).trim() : '';
+        const nomeNovo = log.dados_novos && log.dados_novos.nome ? String(log.dados_novos.nome).trim() : '';
+        const normAntigo = normalizarTextoComparacao(nomeAntigo);
+        const normNovo = normalizarTextoComparacao(nomeNovo);
+
+        if (regId && mapaInstrutoresPorId.has(regId)) {
+          const nomeAtual = mapaInstrutoresPorId.get(regId);
+          if (normAntigo) mapaRenomeacaoInstrutor.set(normAntigo, nomeAtual);
+          if (normNovo) mapaRenomeacaoInstrutor.set(normNovo, nomeAtual);
+        } else if (normAntigo && nomeNovo) {
+          cadeiaRenomeacao.set(normAntigo, nomeNovo);
+        }
+      });
+
+      cadeiaRenomeacao.forEach((destino, origemNorm) => {
+        let atual = destino;
+        const visitados = new Set([origemNorm]);
+        while (true) {
+          const atualNorm = normalizarTextoComparacao(atual);
+          if (mapaInstrutoresPorNomeNorm.has(atualNorm)) {
+            atual = mapaInstrutoresPorNomeNorm.get(atualNorm);
+            break;
+          }
+          if (cadeiaRenomeacao.has(atualNorm) && !visitados.has(atualNorm)) {
+            visitados.add(atualNorm);
+            atual = cadeiaRenomeacao.get(atualNorm);
+          } else {
+            break;
+          }
+        }
+        if (!mapaRenomeacaoInstrutor.has(origemNorm)) {
+          mapaRenomeacaoInstrutor.set(origemNorm, atual);
+        }
+      });
+    }
+
+    function resolverNomeInstrutorAtualizado(nomeOuTurma) {
+      if (!nomeOuTurma) return '';
+
+      let rawNome = '';
+      if (typeof nomeOuTurma === 'object') {
+        const instId = nomeOuTurma.instrutor_id ?? nomeOuTurma.id_instrutor;
+        if (instId !== undefined && instId !== null && mapaInstrutoresPorId.has(String(instId))) {
+          return mapaInstrutoresPorId.get(String(instId));
+        }
+        rawNome = nomeOuTurma.instrutor ? String(nomeOuTurma.instrutor).trim() : '';
+      } else {
+        rawNome = String(nomeOuTurma).trim();
+      }
+
+      if (!rawNome) return '';
+      if (!instrutoresMemoria || instrutoresMemoria.length === 0) return rawNome;
+
+      const norm = normalizarTextoComparacao(rawNome);
+      if (!norm) return rawNome;
+
+      // 1. Correspondência exata normalizada
+      if (mapaInstrutoresPorNomeNorm.has(norm)) {
+        return mapaInstrutoresPorNomeNorm.get(norm);
+      }
+
+      // 2. Correspondência pelo histórico de alterações (logs_auditoria)
+      if (mapaRenomeacaoInstrutor.has(norm)) {
+        return mapaRenomeacaoInstrutor.get(norm);
+      }
+
+      // 3a. Prefixo por palavra completa
+      const matchesPrefixo = instrutoresMemoria.filter(inst => {
+        if (!inst || !inst.nome) return false;
+        const instNorm = normalizarTextoComparacao(inst.nome);
+        return instNorm && (instNorm.startsWith(norm + ' ') || norm.startsWith(instNorm + ' '));
+      });
+      if (matchesPrefixo.length === 1) {
+        return String(matchesPrefixo[0].nome).trim();
+      }
+
+      // 3b. Substring (para nomes com >= 4 caracteres)
+      if (norm.length >= 4) {
+        const matchesSubstring = instrutoresMemoria.filter(inst => {
+          if (!inst || !inst.nome) return false;
+          const instNorm = normalizarTextoComparacao(inst.nome);
+          return instNorm && instNorm.length >= 4 && (instNorm.includes(norm) || norm.includes(instNorm));
+        });
+        if (matchesSubstring.length === 1) {
+          return String(matchesSubstring[0].nome).trim();
+        }
+      }
+
+      // 4. Primeiro nome + interseção de sobrenome (ou único instrutor com mesmo primeiro nome)
+      const tokensAlvo = extrairTokensSignificativos(rawNome);
+      if (tokensAlvo.length > 0) {
+        const primeiroAlvo = tokensAlvo[0];
+        const sobrenomesAlvo = tokensAlvo.slice(1);
+
+        const primeiroNomeCoincide = (p1, p2) => {
+          if (!p1 || !p2) return false;
+          if (p1 === p2) return true;
+          return Math.max(p1.length, p2.length) >= 4 && distanciaEdicao(p1, p2) <= 1;
+        };
+
+        if (sobrenomesAlvo.length > 0) {
+          const matchesSobrenome = instrutoresMemoria.filter(inst => {
+            if (!inst || !inst.nome) return false;
+            const tokensInst = extrairTokensSignificativos(inst.nome);
+            if (tokensInst.length === 0) return false;
+            if (!primeiroNomeCoincide(primeiroAlvo, tokensInst[0])) return false;
+            const sobrenomesInst = tokensInst.slice(1);
+            return sobrenomesAlvo.some(sa =>
+              sobrenomesInst.some(si =>
+                si === sa || (Math.min(si.length, sa.length) >= 4 && distanciaEdicao(si, sa) <= 1)
+              )
+            );
+          });
+          if (matchesSobrenome.length === 1) {
+            return String(matchesSobrenome[0].nome).trim();
+          }
+        }
+
+        const matchesPrimeiroNome = instrutoresMemoria.filter(inst => {
+          if (!inst || !inst.nome) return false;
+          const tokensInst = extrairTokensSignificativos(inst.nome);
+          return tokensInst.length > 0 && primeiroNomeCoincide(primeiroAlvo, tokensInst[0]);
+        });
+        if (matchesPrimeiroNome.length === 1) {
+          return String(matchesPrimeiroNome[0].nome).trim();
+        }
+      }
+
+      return rawNome;
+    }
+
+    async function sincronizarNomesInstrutoresNasTurmas(turmas, instrutores, logsInstrutores) {
+      construirIndicesInstrutores(instrutores, logsInstrutores);
+
+      const atualizacoes = [];
+      (turmas || []).forEach(turma => {
+        if (!turma) return;
+        const nomeOriginal = (turma.instrutor || '').trim();
+        const novoNome = resolverNomeInstrutorAtualizado(turma);
+        if (novoNome && novoNome !== nomeOriginal) {
+          turma.instrutor = novoNome;
+          if (turma.id !== undefined && turma.id !== null) {
+            atualizacoes.push(
+              Promise.resolve(
+                supa.from('turmas').update({ instrutor: novoNome }).eq('id', turma.id)
+              ).catch(() => {})
+            );
+          }
+        }
+      });
+
+      if (atualizacoes.length > 0) {
+        Promise.allSettled(atualizacoes).catch(() => {});
+      }
+    }
+
+    function popularDatalistInstrutores() {
+      const dl = document.getElementById('listaInstrutoresBase');
+      if (!dl) return;
+      dl.innerHTML = '';
+      (instrutoresMemoria || []).forEach(inst => {
+        if (inst && inst.nome) {
+          const opt = document.createElement('option');
+          opt.value = String(inst.nome).trim();
+          dl.appendChild(opt);
+        }
+      });
+    }
+
     // --- CARREGAMENTO DE DADOS DO SUPABASE ---
     async function carregarDadosSupabase(isManualSync = false) {
+      if (sincronizacaoEmAndamento && !isManualSync) return;
+      sincronizacaoEmAndamento = true;
       atualizarStatusBadge('loading', 'Carregando dados do SDETR...');
 
+      const cursoAtualId = document.getElementById('courseSelect')?.value || '';
+      const turmaAtualId = document.getElementById('turmaSelect')?.value || '';
+      const certCodeAtual = document.getElementById('certCodeInput')?.value || '';
+      const alunoAnterior = selectedStudentRef
+        ? { cpf: selectedStudentRef.cpf || '', nome: selectedStudentRef.nome || '' }
+        : null;
+
+      const preservarEdicaoManual = !isManualSync && isAdmin && edicaoManualAdminCampos.size > 0;
+      const snapshotValoresManuais = {};
+      if (preservarEdicaoManual) {
+        edicaoManualAdminCampos.forEach(id => {
+          const el = document.getElementById(id);
+          if (el) snapshotValoresManuais[id] = el.value;
+        });
+      } else if (isManualSync) {
+        edicaoManualAdminCampos.clear();
+      }
+
       try {
-        const [resCursos, resTurmas, resAlunos, resInstrutores] = await Promise.all([
+        const [resCursos, resTurmas, resAlunos, resInstrutores, resLogsInstrutores] = await Promise.all([
           supa.from('cursos').select('*').order('nome'),
           supa.from('turmas').select('*').order('curso_nome'),
           supa.from('alunos_ccp').select('cpf, nome, telefone, email, cursos, data_cadastro').range(0, 4999),
-          supa.from('instrutores').select('id, nome').order('nome')
+          supa.from('instrutores').select('*').order('nome'),
+          Promise.resolve(
+            supa
+              .from('logs_auditoria')
+              .select('registro_id, acao, dados_antigos, dados_novos, data_hora')
+              .eq('tabela_afetada', 'instrutores')
+              .eq('acao', 'UPDATE')
+              .order('data_hora', { ascending: true })
+          ).then(r => r, () => ({ data: [], error: null }))
         ]);
 
         if (resCursos.error) throw resCursos.error;
@@ -1384,13 +1688,41 @@
         todasTurmasBase = resTurmas.data || [];
         todosAlunosBase = resAlunos.data || [];
         instrutoresMemoria = resInstrutores.data || [];
+        const logsInstrutores = (!resLogsInstrutores?.error && Array.isArray(resLogsInstrutores?.data))
+          ? resLogsInstrutores.data
+          : [];
 
+        await sincronizarNomesInstrutoresNasTurmas(todasTurmasBase, instrutoresMemoria, logsInstrutores);
+        popularDatalistInstrutores();
         atualizarListasMemoriaPorPerfil();
 
         localStorage.removeItem('ccp_supabase_cache');
+        ultimaSincronizacaoMs = Date.now();
 
         atualizarStatusBadge('success', `Conectado (${cursosMemoria.length} cursos, ${alunosMemoria.length} alunos)`);
-        popularSelectCursos();
+        popularSelectCursos({
+          cursoId: cursoAtualId,
+          turmaId: turmaAtualId,
+          alunoAnterior,
+          certCodeAtual,
+          preservarEdicaoManual
+        });
+
+        if (preservarEdicaoManual) {
+          restaurandoEstadoSilencioso = true;
+          try {
+            Object.entries(snapshotValoresManuais).forEach(([id, val]) => {
+              const el = document.getElementById(id);
+              if (el) el.value = val;
+            });
+            if (edicaoManualAdminCampos.has('curriculumInputAdmin')) {
+              onCurriculumInputAdmin();
+            }
+            updateCurrentData();
+          } finally {
+            restaurandoEstadoSilencioso = false;
+          }
+        }
 
         if (isManualSync) {
           alert(`Sincronização com SDETR concluída com sucesso!\n• ${cursosMemoria.length} cursos disponíveis\n• ${turmasMemoria.length} turmas disponíveis\n• ${alunosMemoria.length} alunos cadastrados`);
@@ -1399,6 +1731,8 @@
         console.error("Erro ao carregar dados do SDETR:", err);
         localStorage.removeItem('ccp_supabase_cache');
         atualizarStatusBadge('error', 'Falha ao conectar no SDETR');
+      } finally {
+        sincronizacaoEmAndamento = false;
       }
     }
 
@@ -1425,6 +1759,7 @@
     }
 
     function toggleCursosInativosAdmin() {
+      edicaoManualAdminCampos.clear();
       atualizarListasMemoriaPorPerfil();
       popularSelectCursos();
     }
@@ -1440,9 +1775,9 @@
       else dot.classList.add('bg-red-400');
     }
 
-    function popularSelectCursos() {
+    function popularSelectCursos(estadoRestauracao = null) {
       const select = document.getElementById('courseSelect');
-      const cursoAtualId = select.value;
+      const cursoAtualId = estadoRestauracao?.cursoId || select.value;
       select.innerHTML = '';
       if (cursosMemoria.length === 0) {
         select.innerHTML = '<option value="">Nenhum curso localizado</option>';
@@ -1465,32 +1800,37 @@
         const cursoUnhas = cursosMemoria.find(c => c.nome.toLowerCase().includes('unha'));
         select.value = cursoUnhas ? cursoUnhas.id : cursosMemoria[0].id;
       }
-      onCourseChange();
+      onCourseChange(estadoRestauracao);
     }
 
-    function onCourseChange() {
+    function onCourseChange(estadoRestauracao = null) {
+      if (!estadoRestauracao) {
+        edicaoManualAdminCampos.clear();
+      }
       const selectCurso = document.getElementById('courseSelect');
       const cursoId = selectCurso.value;
       selectedCourse = cursosMemoria.find(c => String(c.id) === String(cursoId)) || cursosMemoria[0];
       if (!selectedCourse) return;
 
       const customInput = document.getElementById('courseCustomInput');
-      if (customInput) {
+      if (customInput && (!estadoRestauracao?.preservarEdicaoManual || !edicaoManualAdminCampos.has('courseCustomInput'))) {
         customInput.value = selectedCourse.nome;
       }
 
-      popularSelectTurmas();
+      popularSelectTurmas(estadoRestauracao);
     }
 
-    function popularSelectTurmas() {
+    function popularSelectTurmas(estadoRestauracao = null) {
       const selectTurma = document.getElementById('turmaSelect');
+      const turmaPreferidaId = estadoRestauracao ? (estadoRestauracao.turmaId || '') : '';
       selectTurma.innerHTML = '';
 
       const chkInativos = document.getElementById('chkTodosCursosAdmin');
       const incluirInativos = isAdmin && chkInativos && chkInativos.checked;
+      const cursoNorm = selectedCourse ? normalizarTextoComparacao(selectedCourse.nome) : '';
 
       let turmasDoCurso = turmasMemoria.filter(t => {
-        if (!selectedCourse || t.curso_nome !== selectedCourse.nome) return false;
+        if (!selectedCourse || normalizarTextoComparacao(t.curso_nome) !== cursoNorm) return false;
         if (!incluirInativos) {
           const st = (t.status || '').trim().toLowerCase();
           return st !== 'inativo' && st !== 'desativado';
@@ -1512,54 +1852,132 @@
         selectTurma.appendChild(opt);
       });
 
-      selectTurma.value = "";
-      onTurmaChange();
+      const turmaExiste = turmaPreferidaId && turmasDoCurso.some(t => String(t.id) === String(turmaPreferidaId));
+      selectTurma.value = turmaExiste ? turmaPreferidaId : "";
+      onTurmaChange(estadoRestauracao);
     }
 
-    function onTurmaChange() {
+    function encontrarTurmaPadraoDoCurso(cursoObj) {
+      if (!cursoObj) return null;
+      const cursoNorm = normalizarTextoComparacao(cursoObj.nome);
+      const turmasDoCurso = turmasMemoria.filter(t => normalizarTextoComparacao(t.curso_nome) === cursoNorm);
+      return turmasDoCurso.find(t => t.data_inicio || t.data_fim || t.instrutor) || turmasDoCurso[0] || null;
+    }
+
+    function obterTurmaDoAlunoNoCurso(aluno, cursoObj) {
+      if (selectedTurma) return selectedTurma;
+      if (!aluno || !aluno.cursos || !cursoObj) return null;
+
+      const cursoNorm = normalizarTextoComparacao(cursoObj.nome);
+      const chkInativos = document.getElementById('chkTodosCursosAdmin');
+      const incluirInativos = isAdmin && chkInativos && chkInativos.checked;
+
+      const tokens = String(aluno.cursos).split(' | ').map(c => c.trim()).filter(Boolean);
+      const candidatos = [];
+
+      tokens.forEach(token => {
+        if (token.includes('[Pendente/Lista de Espera]')) return;
+        const isInativoToken = token.includes('(INATIVO)');
+        if (!incluirInativos && isInativoToken) return;
+
+        const semInativo = token.replace(/\s*\(INATIVO\)\s*$/i, '').trim();
+        const match = semInativo.match(/^(.*?)\s*\[([^\]]+)\]\s*$/);
+        if (!match) return;
+
+        const cursoTokenNorm = normalizarTextoComparacao(match[1]);
+        const identTokenNorm = normalizarTextoComparacao(match[2]);
+        if (cursoTokenNorm === cursoNorm && identTokenNorm) {
+          candidatos.push({ identTokenNorm, isInativoToken });
+        }
+      });
+
+      candidatos.sort((a, b) => Number(a.isInativoToken) - Number(b.isInativoToken));
+
+      const listaBusca = incluirInativos ? todasTurmasBase : turmasMemoria;
+      for (const cand of candidatos) {
+        const turmaEncontrada = listaBusca.find(t =>
+          normalizarTextoComparacao(t.curso_nome) === cursoNorm &&
+          normalizarTextoComparacao(t.identificador) === cand.identTokenNorm
+        ) || todasTurmasBase.find(t =>
+          normalizarTextoComparacao(t.curso_nome) === cursoNorm &&
+          normalizarTextoComparacao(t.identificador) === cand.identTokenNorm
+        );
+        if (turmaEncontrada) return turmaEncontrada;
+      }
+
+      return null;
+    }
+
+    function aplicarDadosTurmaNoFormulario(turmaAlvo, estadoRestauracao = null) {
+      const preservar = Boolean(estadoRestauracao && estadoRestauracao.preservarEdicaoManual);
+      const turmaEfetiva = turmaAlvo || encontrarTurmaPadraoDoCurso(selectedCourse);
+
+      let dataInicio = '';
+      let dataFim = '';
+      let instrutor = '';
+
+      if (turmaEfetiva) {
+        dataInicio = formatarDataBR(turmaEfetiva.data_inicio);
+        dataFim = formatarDataBR(turmaEfetiva.data_fim);
+        instrutor = resolverNomeInstrutorAtualizado(turmaEfetiva);
+      }
+
+      if (!preservar || !edicaoManualAdminCampos.has('courseStartInput')) {
+        document.getElementById('courseStartInput').value = dataInicio || '16/03/2026';
+      }
+      if (!preservar || !edicaoManualAdminCampos.has('courseEndInput')) {
+        document.getElementById('courseEndInput').value = dataFim || '25/07/2026';
+      }
+
+      if (!preservar || !edicaoManualAdminCampos.has('certIssueDateInput')) {
+        const hoje = new Date();
+        const diaHoje = String(hoje.getDate()).padStart(2, '0');
+        const mesHoje = String(hoje.getMonth() + 1).padStart(2, '0');
+        const anoHoje = hoje.getFullYear();
+        const dataEmissaoPadrao = dataFim || `${diaHoje}/${mesHoje}/${anoHoje}`;
+        document.getElementById('certIssueDateInput').value = dataEmissaoPadrao;
+      }
+
+      const fallbackPadrao = resolverNomeInstrutorAtualizado('Josiane Rodrigues Santos Pereira')
+        || (instrutoresMemoria && instrutoresMemoria[0] ? String(instrutoresMemoria[0].nome).trim() : '')
+        || 'Josiane Rodrigues Santos Pereira';
+      const instrutorFinal = instrutor || fallbackPadrao;
+      ultimoInstrutorResolvidoFormulario = instrutorFinal;
+
+      if (!preservar || !edicaoManualAdminCampos.has('instructorNameInput')) {
+        document.getElementById('instructorNameInput').value = instrutorFinal;
+        if (!preservar || !edicaoManualAdminCampos.has('instructorGenderSelect')) {
+          atualizarGeneroInstrutorPorNome(instrutorFinal);
+        }
+      }
+    }
+
+    function onTurmaChange(estadoRestauracao = null) {
+      if (!estadoRestauracao) {
+        edicaoManualAdminCampos.clear();
+      }
       const selectTurma = document.getElementById('turmaSelect');
       const turmaId = selectTurma.value;
       selectedTurma = turmaId ? turmasMemoria.find(t => String(t.id) === String(turmaId)) : null;
 
-      const carga = selectedCourse.carga_horaria || "60";
-      document.getElementById('courseHoursInput').value = carga;
-      document.getElementById('courseHoursExtInput').value = numeroPorExtenso(carga);
-
-      let dataInicio = "";
-      let dataFim = "";
-      let instrutor = "";
-
-      if (selectedTurma) {
-        dataInicio = formatarDataBR(selectedTurma.data_inicio);
-        dataFim = formatarDataBR(selectedTurma.data_fim);
-        instrutor = selectedTurma.instrutor || "";
-      } else {
-        const turmasDoCurso = turmasMemoria.filter(t => t.curso_nome === selectedCourse.nome);
-        const tValida = turmasDoCurso.find(t => t.data_inicio || t.data_fim || t.instrutor);
-        if (tValida) {
-          dataInicio = formatarDataBR(tValida.data_inicio);
-          dataFim = formatarDataBR(tValida.data_fim);
-          instrutor = tValida.instrutor || "";
+      if (!estadoRestauracao?.preservarEdicaoManual || !edicaoManualAdminCampos.has('courseHoursInput')) {
+        const carga = selectedCourse.carga_horaria || "60";
+        document.getElementById('courseHoursInput').value = carga;
+        if (!estadoRestauracao?.preservarEdicaoManual || !edicaoManualAdminCampos.has('courseHoursExtInput')) {
+          document.getElementById('courseHoursExtInput').value = numeroPorExtenso(carga);
         }
       }
 
-      document.getElementById('courseStartInput').value = dataInicio || '16/03/2026';
-      document.getElementById('courseEndInput').value = dataFim || '25/07/2026';
+      const cursoNorm = selectedCourse ? normalizarTextoComparacao(selectedCourse.nome) : '';
+      const turmasDoCurso = turmasMemoria.filter(t => normalizarTextoComparacao(t.curso_nome) === cursoNorm);
+      const tValida = turmasDoCurso.find(t => t.data_inicio || t.data_fim || t.instrutor) || turmasDoCurso[0] || null;
 
-      // Define data de emissão: padrão é a data de término ou a data de hoje
-      const hoje = new Date();
-      const diaHoje = String(hoje.getDate()).padStart(2, '0');
-      const mesHoje = String(hoje.getMonth() + 1).padStart(2, '0');
-      const anoHoje = hoje.getFullYear();
-      const dataEmissaoPadrao = dataFim || `${diaHoje}/${mesHoje}/${anoHoje}`;
-      document.getElementById('certIssueDateInput').value = dataEmissaoPadrao;
+      aplicarDadosTurmaNoFormulario(selectedTurma || tValida, estadoRestauracao);
 
-      const instrutorFinal = instrutor || 'Josiane Rodrigues Santos Pereira';
-      document.getElementById('instructorNameInput').value = instrutorFinal;
-      atualizarGeneroInstrutorPorNome(instrutorFinal);
-
-      renderCurriculum(selectedCourse);
-      filtrarEPopularAlunos();
+      if (!estadoRestauracao?.preservarEdicaoManual || !edicaoManualAdminCampos.has('curriculumInputAdmin')) {
+        renderCurriculum(selectedCourse);
+      }
+      filtrarEPopularAlunos(estadoRestauracao);
     }
 
     // --- FILTRAGEM E SELEÇÃO DE ALUNOS ---
@@ -1567,7 +1985,7 @@
       filtrarEPopularAlunos();
     }
 
-    function filtrarEPopularAlunos() {
+    function filtrarEPopularAlunos(estadoRestauracao = null) {
       const adminScopeEl = document.querySelector('input[name="adminStudentScope"]:checked');
       const scopeTodos = isAdmin && adminScopeEl && adminScopeEl.value === 'todos';
       const chkInativos = document.getElementById('chkTodosCursosAdmin');
@@ -1588,26 +2006,28 @@
         if (!selectedCourse) return;
         const apenasAtivos = !incluirInativos;
         const cursoNome = selectedCourse.nome;
+        const cursoNorm = normalizarTextoComparacao(cursoNome);
 
         if (selectedTurma) {
-          const stringTurma = `${cursoNome} [${selectedTurma.identificador}]`;
-          const stringInativo = `${stringTurma} (INATIVO)`;
+          const stringTurmaNorm = normalizarTextoComparacao(`${cursoNome} [${selectedTurma.identificador}]`);
+          const stringInativoNorm = normalizarTextoComparacao(`${cursoNome} [${selectedTurma.identificador}] (INATIVO)`);
           alunosFiltrados = alunosMemoria.filter(aluno => {
             if (!aluno.cursos) return false;
-            const cursosArray = aluno.cursos.split(' | ').map(c => c.trim());
-            return apenasAtivos 
-              ? cursosArray.includes(stringTurma) 
-              : (cursosArray.includes(stringTurma) || cursosArray.includes(stringInativo));
+            const cursosArrayNorm = aluno.cursos.split(' | ').map(c => normalizarTextoComparacao(c));
+            return apenasAtivos
+              ? cursosArrayNorm.includes(stringTurmaNorm)
+              : (cursosArrayNorm.includes(stringTurmaNorm) || cursosArrayNorm.includes(stringInativoNorm));
           });
         } else {
-          const prefixoCurso = `${cursoNome} [`;
           alunosFiltrados = alunosMemoria.filter(aluno => {
             if (!aluno.cursos) return false;
             const cursosArray = aluno.cursos.split(' | ').map(c => c.trim());
             return cursosArray.some(c => {
-              if (!c.startsWith(prefixoCurso) || c.includes('[Pendente/Lista de Espera]')) return false;
+              if (c.includes('[Pendente/Lista de Espera]')) return false;
               if (apenasAtivos && c.includes('(INATIVO)')) return false;
-              return true;
+              const match = c.replace(/\s*\(INATIVO\)\s*$/i, '').trim().match(/^(.*?)\s*\[([^\]]+)\]\s*$/);
+              if (!match) return false;
+              return normalizarTextoComparacao(match[1]) === cursoNorm;
             });
           });
         }
@@ -1620,10 +2040,10 @@
         countBadge.textContent = `${alunosFiltrados.length} ${alunosFiltrados.length === 1 ? 'aluno' : 'alunos'}`;
       }
 
-      popularSelectAlunos(alunosFiltrados);
+      popularSelectAlunos(alunosFiltrados, estadoRestauracao);
     }
 
-    function popularSelectAlunos(listaAlunos) {
+    function popularSelectAlunos(listaAlunos, estadoRestauracao = null) {
       const select = document.getElementById('studentSelect');
       const termoBusca = (document.getElementById('studentSearchInput').value || '').trim().toLowerCase();
       select.innerHTML = '';
@@ -1639,7 +2059,8 @@
 
       if (listaVisivel.length === 0) {
         select.innerHTML = '<option value="">Nenhum aluno encontrado</option>';
-        if (!isAdmin) {
+        selectedStudentRef = null;
+        if (!isAdmin && !estadoRestauracao?.preservarEdicaoManual) {
           document.getElementById('studentNameInput').value = "";
         }
         updateCurrentData();
@@ -1654,12 +2075,52 @@
         select.appendChild(opt);
       });
 
-      selectedStudentIndex = 0;
-      select.value = 0;
-      document.getElementById('studentNameInput').value = listaVisivel[0].nome;
-      
-      const anoAtual = new Date().getFullYear();
-      document.getElementById('certCodeInput').value = gerarCodigoCertificadoUnico(anoAtual);
+      let idxSelecionar = 0;
+      let manteveMesmoAluno = false;
+      if (estadoRestauracao && estadoRestauracao.alunoAnterior) {
+        const cpfAlvo = String(estadoRestauracao.alunoAnterior.cpf || '').replace(/\D/g, '');
+        const nomeAlvo = normalizarTextoComparacao(estadoRestauracao.alunoAnterior.nome || '');
+        const idxEncontrado = listaVisivel.findIndex(a => {
+          const cpfItem = String(a.cpf || '').replace(/\D/g, '');
+          if (cpfAlvo && cpfItem && cpfAlvo === cpfItem) return true;
+          return nomeAlvo && normalizarTextoComparacao(a.nome || '') === nomeAlvo;
+        });
+        if (idxEncontrado >= 0) {
+          idxSelecionar = idxEncontrado;
+          manteveMesmoAluno = true;
+        }
+      }
+
+      const alunoSelecionado = listaVisivel[idxSelecionar];
+      selectedStudentIndex = idxSelecionar;
+      selectedStudentRef = alunoSelecionado;
+      select.value = idxSelecionar;
+
+      if (!estadoRestauracao?.preservarEdicaoManual || !edicaoManualAdminCampos.has('studentNameInput')) {
+        document.getElementById('studentNameInput').value = alunoSelecionado.nome;
+      }
+
+      const mesmaTurmaECurso = Boolean(
+        estadoRestauracao &&
+        String(selectedCourse?.id || '') === String(estadoRestauracao.cursoId || '') &&
+        String(selectedTurma?.id || '') === String(estadoRestauracao.turmaId || '')
+      );
+
+      if (!estadoRestauracao?.preservarEdicaoManual || !edicaoManualAdminCampos.has('certCodeInput')) {
+        if (manteveMesmoAluno && mesmaTurmaECurso && estadoRestauracao?.certCodeAtual) {
+          document.getElementById('certCodeInput').value = estadoRestauracao.certCodeAtual;
+        } else {
+          const anoAtual = new Date().getFullYear();
+          document.getElementById('certCodeInput').value = gerarCodigoCertificadoUnico(anoAtual);
+        }
+      }
+
+      if (!selectedTurma) {
+        const turmaDoAluno = obterTurmaDoAlunoNoCurso(alunoSelecionado, selectedCourse);
+        if (turmaDoAluno) {
+          aplicarDadosTurmaNoFormulario(turmaDoAluno, estadoRestauracao);
+        }
+      }
 
       updateCurrentData();
     }
@@ -1682,10 +2143,21 @@
 
       const idx = parseInt(select.value);
       if (!isNaN(idx) && listaVisivel[idx]) {
+        edicaoManualAdminCampos.clear();
+        const alunoSelecionado = listaVisivel[idx];
         selectedStudentIndex = idx;
-        document.getElementById('studentNameInput').value = listaVisivel[idx].nome;
+        selectedStudentRef = alunoSelecionado;
+        document.getElementById('studentNameInput').value = alunoSelecionado.nome;
         const anoAtual = new Date().getFullYear();
         document.getElementById('certCodeInput').value = gerarCodigoCertificadoUnico(anoAtual);
+
+        if (!selectedTurma) {
+          const turmaDoAluno = obterTurmaDoAlunoNoCurso(alunoSelecionado, selectedCourse);
+          if (turmaDoAluno) {
+            aplicarDadosTurmaNoFormulario(turmaDoAluno);
+          }
+        }
+
         updateCurrentData();
       }
     }
@@ -1771,12 +2243,19 @@
     }
 
     // --- FUNÇÕES DE DIGITAÇÃO E EDIÇÃO LIVRE (ADMIN) ---
+    function marcarEdicaoManualAdmin(campos) {
+      if (!isAdmin || restaurandoEstadoSilencioso) return;
+      (Array.isArray(campos) ? campos : [campos]).forEach(c => edicaoManualAdminCampos.add(c));
+    }
+
     function onStudentNameDirectInput() {
+      marcarEdicaoManualAdmin('studentNameInput');
       const name = document.getElementById('studentNameInput').value || "NOME DO ALUNO";
       aplicarNomeNoCertificado(document.getElementById('certStudentName'), name);
     }
 
     function onCourseCustomInput() {
+      marcarEdicaoManualAdmin('courseCustomInput');
       const customVal = document.getElementById('courseCustomInput').value.trim();
       const cursoCorrespondente = todosCursosBase.find(c => c.nome.toLowerCase() === customVal.toLowerCase());
       if (cursoCorrespondente) {
@@ -1788,6 +2267,7 @@
     }
 
     function onHoursDirectInput() {
+      marcarEdicaoManualAdmin(['courseHoursInput', 'courseHoursExtInput']);
       const horas = document.getElementById('courseHoursInput').value;
       const extenso = numeroPorExtenso(horas);
       document.getElementById('courseHoursExtInput').value = extenso;
@@ -1796,16 +2276,19 @@
     }
 
     function onHoursExtDirectInput() {
+      marcarEdicaoManualAdmin('courseHoursExtInput');
       document.getElementById('certHoursExt').textContent = document.getElementById('courseHoursExtInput').value;
     }
 
     function onPeriodDirectInput() {
+      marcarEdicaoManualAdmin(['courseStartInput', 'courseEndInput']);
       const start = document.getElementById('courseStartInput').value;
       const end = document.getElementById('courseEndInput').value;
       document.getElementById('certPeriod').textContent = `${start} a ${end}`;
     }
 
     function onIssueDateDirectInput() {
+      marcarEdicaoManualAdmin('certIssueDateInput');
       const emissao = document.getElementById('certIssueDateInput').value;
       document.getElementById('certEmissionDateDisplay').textContent = formatarDataPorExtensoBR(emissao);
     }
@@ -1872,6 +2355,7 @@
     }
 
     function onInstructorGenderChange() {
+      marcarEdicaoManualAdmin('instructorGenderSelect');
       updateCurrentData();
     }
 
@@ -1885,19 +2369,24 @@
     }
 
     function onInstructorDirectInput() {
+      marcarEdicaoManualAdmin('instructorNameInput');
       const nome = document.getElementById('instructorNameInput').value;
       document.getElementById('certInstructorFront').textContent = nome;
-      atualizarGeneroInstrutorPorNome(nome);
+      if (!edicaoManualAdminCampos.has('instructorGenderSelect')) {
+        atualizarGeneroInstrutorPorNome(nome);
+      }
       updateCurrentData();
     }
 
     function onCertCodeDirectInput() {
+      marcarEdicaoManualAdmin('certCodeInput');
       const certCode = document.getElementById('certCodeInput').value || "CCP-2026-0001";
       atualizarQrCodePreview(certCode);
     }
 
     // --- EDIÇÃO DA GRADE CURRICULAR (ADMIN) ---
     function onCurriculumInputAdmin() {
+      marcarEdicaoManualAdmin('curriculumInputAdmin');
       const text = document.getElementById('curriculumInputAdmin').value;
       renderCurriculumFromText(text);
     }
@@ -1936,6 +2425,7 @@
     }
 
     function restaurarDadosOriginais() {
+      edicaoManualAdminCampos.clear();
       if (document.getElementById('courseCustomInput') && selectedCourse) {
         document.getElementById('courseCustomInput').value = selectedCourse.nome;
       }
@@ -2121,6 +2611,16 @@
       const prefixoInstrutor = obterPrefixoInstrutor(instructor);
       const anoAtual = new Date().getFullYear();
 
+      const adminEditouInstrutor = isAdmin && (
+        edicaoManualAdminCampos.has('instructorNameInput') ||
+        (ultimoInstrutorResolvidoFormulario && instructor.trim() !== ultimoInstrutorResolvidoFormulario)
+      );
+      const adminEditouPeriodo = isAdmin && (
+        edicaoManualAdminCampos.has('courseStartInput') ||
+        edicaoManualAdminCampos.has('courseEndInput')
+      );
+      const adminEditouEmissao = isAdmin && edicaoManualAdminCampos.has('certIssueDateInput');
+
       const loteCertificados = [];
 
       alunosFiltrados.forEach((aluno, index) => {
@@ -2128,15 +2628,42 @@
         const certCode = gerarCodigoCertificadoUnico(anoAtual);
         const isUltimoAluno = index === alunosFiltrados.length - 1;
 
+        const turmaAluno = selectedTurma || obterTurmaDoAlunoNoCurso(aluno, selectedCourse);
+        let alunoStart = start;
+        let alunoEnd = end;
+        let alunoIssueDate = issueDate;
+        let alunoInstructor = instructor;
+
+        if (!selectedTurma && turmaAluno) {
+          if (!adminEditouPeriodo) {
+            if (turmaAluno.data_inicio) alunoStart = formatarDataBR(turmaAluno.data_inicio);
+            if (turmaAluno.data_fim) alunoEnd = formatarDataBR(turmaAluno.data_fim);
+          }
+          if (!adminEditouEmissao && alunoEnd) {
+            alunoIssueDate = alunoEnd;
+          }
+          if (!adminEditouInstrutor) {
+            const instrutorTurmaAluno = resolverNomeInstrutorAtualizado(turmaAluno);
+            if (instrutorTurmaAluno) {
+              alunoInstructor = instrutorTurmaAluno;
+            }
+          }
+        }
+
+        const alunoPeriod = `${alunoStart} a ${alunoEnd}`;
+        const alunoPrefixoInstrutor = (alunoInstructor === instructor)
+          ? prefixoInstrutor
+          : (detectarGeneroInstrutor(alunoInstructor) === 'M' ? 'ministrado pelo instrutor' : 'ministrado pela instrutora');
+
         loteCertificados.push({
           codigo: certCode,
           nome_aluno: studentName,
           curso: courseName,
           carga_horaria: String(hours),
           horas_extenso: hoursExt,
-          periodo: period,
-          data_conclusao: end || issueDate,
-          instrutor: instructor,
+          periodo: alunoPeriod,
+          data_conclusao: alunoEnd || alunoIssueDate,
+          instrutor: alunoInstructor,
           status: 'ativo'
         });
 
@@ -2152,12 +2679,12 @@
 
           const textoDiv = document.createElement('div');
           textoDiv.style.cssText = "position: absolute; top: 108mm; left: 102mm; width: 172mm; font-size: 10.5pt; line-height: 1.55; text-align: justify; text-align-last: center; color: #222222; font-family: Arial, sans-serif;";
-          textoDiv.innerHTML = `concluiu com êxito o curso de qualificação profissional em <b>${escapeHtml(courseName.toUpperCase())}</b>, ${escapeHtml(prefixoInstrutor)} <b>${escapeHtml(instructor)}</b>, promovido pelo Centro de Capacitação Profissionalizante Lahylton Cézar Santana Neves (CCP) através da Secretaria Municipal de Desenvolvimento Econômico, Trabalho e Renda, com carga horária total de <b>${escapeHtml(hours)}</b> horas (${escapeHtml(hoursExt)}), no período de ${escapeHtml(period)}.`;
+          textoDiv.innerHTML = `concluiu com êxito o curso de qualificação profissional em <b>${escapeHtml(courseName.toUpperCase())}</b>, ${escapeHtml(alunoPrefixoInstrutor)} <b>${escapeHtml(alunoInstructor)}</b>, promovido pelo Centro de Capacitação Profissionalizante Lahylton Cézar Santana Neves (CCP) através da Secretaria Municipal de Desenvolvimento Econômico, Trabalho e Renda, com carga horária total de <b>${escapeHtml(hours)}</b> horas (${escapeHtml(hoursExt)}), no período de ${escapeHtml(alunoPeriod)}.`;
           frontDiv.appendChild(textoDiv);
 
           const dataDiv = document.createElement('div');
           dataDiv.style.cssText = "position: absolute; top: 136mm; left: 102mm; width: 172mm; text-align: center; font-size: 10.5pt; color: #222222; font-family: Arial, sans-serif;";
-          dataDiv.textContent = `Iguaba Grande - RJ, ${formatarDataPorExtensoBR(issueDate)}.`;
+          dataDiv.textContent = `Iguaba Grande - RJ, ${formatarDataPorExtensoBR(alunoIssueDate)}.`;
           frontDiv.appendChild(dataDiv);
 
           if (batchPrintContainer) batchPrintContainer.appendChild(frontDiv);
